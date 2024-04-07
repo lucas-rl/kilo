@@ -1,11 +1,16 @@
 /*** includes ***/
 
+#define _DEFAULT_SOURCE
+#define _BSD_SOURCE
+#define _GNU_SOURCE
+
 #include <ctype.h>
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
+#include <sys/types.h>
 #include <termios.h>
 #include <unistd.h>
 
@@ -28,18 +33,26 @@ enum editorKey{
 
 /*** data ***/
 
+typedef struct erow{
+	int size;
+	char* chars; 
+} erow;
+
 struct editorConfig{
 	struct termios orig_termios;
 	int screenrows;
 	int screencols;
 	int cy, cx;
+	int numrows;
+	erow row;
+
 };
 
 struct editorConfig E;
 
 /*** terminal ***/
 
-void die(char *s){
+void die(char* s){
 	write(STDOUT_FILENO, "\x1b[2J", 4);
 	write(STDOUT_FILENO, "\x1b[H", 3);
 	perror(s);
@@ -144,6 +157,30 @@ int getWindowSize(int* rows, int* cols){
 }
 
 
+/*** file i/o  ***/
+
+void editorOpen(char* filename){
+	FILE* fp = fopen(filename, "read");
+	if(!fp) die("fopen");
+	
+	char* line = NULL;
+	size_t linecap = 0;
+	ssize_t linelen = 0;
+	linelen = getline(&line, &linecap, fp);
+	if(linelen != -1){
+		while(linelen > 0 && (line[linelen-1] == '\r' || line[linelen-1] == '\n')) linelen--;
+		E.row.size = linelen;
+		E.row.chars = malloc(linelen+1);
+		memcpy(E.row.chars, line, linelen);
+		E.row.chars[linelen] = '\0';
+		E.numrows = 1;
+	}
+
+	free(line);
+	fclose(fp);
+}
+
+
 /*** append buffer ***/
 
 struct abuf{
@@ -173,27 +210,32 @@ void abFree(struct abuf *ab){
 //in the buffer
 void editorDrawRows(struct abuf *ab){
 	for(int i = 0 ; i<E.screenrows; i++){
-		if(i == E.screenrows / 3){
-			//why so big?
-			char welcome[80];
-			int welcomelen = snprintf(
-				welcome, sizeof(welcome), 
-				"Kilo editor --- version %s", KILO_VERSION);
-			if(welcomelen > E.screencols) welcomelen = E.screencols;
+		if(i >= E.numrows){
+			if(E.numrows == 0 && i == E.screenrows / 3){
+				//why so big?
+				char welcome[80];
+				int welcomelen = snprintf(
+					welcome, sizeof(welcome), 
+					"Kilo editor --- version %s", KILO_VERSION);
+				if(welcomelen > E.screencols) welcomelen = E.screencols;
 			
-			//remove it latter
-			int padding = (E.screencols - welcomelen)/2;
-			if (padding){
-				abAppend(ab, "~", 1);
-				padding--;
+				//remove it latter
+				int padding = (E.screencols - welcomelen)/2;
+				if (padding){
+					abAppend(ab, "~", 1);
+					padding--;
+				}
+				//change for a FOR loop
+				while(padding--) abAppend(ab, " ", 1);
+				abAppend(ab, welcome, welcomelen);
+			} else{
+				abAppend(ab, "~",1);
 			}
-			//change for a FOR loop
-			while(padding--) abAppend(ab, " ", 1);
-			abAppend(ab, welcome, welcomelen);
-		} else{
-			abAppend(ab, "~",1);
+		} else {
+			int len = E.row.size;
+			if(len > E.screencols) len = E.screencols;
+			abAppend(ab, E.row.chars, len);
 		}
-	
 		abAppend(ab, "\x1b[K", 3);
 		if(i < E.screenrows - 1){
 			abAppend(ab, "\r\n",2);
@@ -288,13 +330,16 @@ void editorProcessKeypress(){
 void initEditor(){
 	E.cx = 0;
 	E.cy = 0;
+	E.numrows = 0;
 	if(getWindowSize(&E.screenrows, &E.screencols)==-1) die("getWindowSize");
 }
 
-int main(){
+int main(int argc, char* argv[]){
 	enableRawMode();
 	initEditor();
-
+	if(argc >= 2){
+		editorOpen(argv[1]);
+	}
 	while(1){
 		editorRefreshScreen();
 		editorProcessKeypress();
